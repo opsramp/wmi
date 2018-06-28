@@ -1,0 +1,106 @@
+Changes in wmi.go file:
+----------------------
+
+1. Added ErrWMITimeout variable
+
+	ErrWMITimeout = errors.New("wmi: query timeout")
+
+2. Added timeout in Query() function
+
+	func Query(query string, dst interface{}, connectServerArgs ...interface{}) error {
+		if DefaultClient.SWbemServicesClient == nil {
+			//return DefaultClient.Query(query, dst, connectServerArgs...)
+			c := make(chan error, 1)
+			go func() { 
+				c <- DefaultClient.Query(query, dst, connectServerArgs...) 
+			} ()
+			
+			select {
+				case err := <-c:
+				return err
+				case <-time.After(120*time.Second):
+				lock.Unlock()
+				runtime.UnlockOSThread()
+				return ErrWMITimeout
+			}
+		}
+		return DefaultClient.SWbemServicesClient.Query(query, dst, connectServerArgs...)
+	}
+
+2. In func (c *Client) Query(), did below changes
+
+	-- itemIndexFlag := true
+
+	-- for itemRaw, length, errItem := enum.Next(1); length > 0; itemRaw, length, errItem = enum.Next(1) {
+
+		err := func() error {
+			if errItem != nil {
+				itemIndexFlag = false
+				return nil
+				//return errItem
+			}
+
+	-- if itemIndexFlag == false{
+			break
+		}
+
+	-- //to work on windows xp and windows 2003 ( these systems does not have ItemIndex) 
+	if itemIndexFlag == false {
+		enum, _ := oleutil.MustGetProperty(result, "_NewEnum").ToIUnknown().IEnumVARIANT(ole.IID_IEnumVariant)
+		    for {
+			itemRaw, _, err1 := enum.Next(1)
+				
+				if err1 != nil {
+				break
+			}
+											
+				item := itemRaw.ToIDispatch()
+				defer itemRaw.Clear()
+		
+				ev := reflect.New(elemType)
+				if err = c.loadEntity(ev.Interface(), item); err != nil {
+					if _, ok := err.(*ErrFieldMismatch); ok {
+						// We continue loading entities even in the face of field mismatch errors.
+						// If we encounter any other error, that other error is returned. Otherwise,
+						// an ErrFieldMismatch is returned.
+						errFieldMismatch = err
+					} else {
+						return err
+					}
+				}
+				if mat != multiArgTypeStructPtr {
+					ev = ev.Elem()
+				}
+				dv.Set(reflect.Append(dv, ev))	
+		    }
+		}
+
+3. Added below two varible after timeType varible
+
+	var strArray = reflect.TypeOf([]string{})
+	var intArray = reflect.TypeOf([]int{})
+
+4. Changes in (c *Client) loadEntity() function
+
+	-- case []interface{}:
+			switch f.Type() {
+				case strArray:
+					strArr := make([]string, len(val))
+					for i, v := range val {
+						strArr[i],_  = v.(string)
+					}						
+					f.Set(reflect.ValueOf(strArr))
+				case intArray:
+					intArr := make([]int, len(val))
+					for i, v := range val {
+						intArr[i] = int(v.(int32))
+					}		
+					f.Set(reflect.ValueOf(intArr))
+					default:
+					return &ErrFieldMismatch{
+						StructType: of.Type(),
+						FieldName:  n,
+						Reason:     fmt.Sprintf("unsupported interface type (%T)", val),
+				}
+			}	
+
