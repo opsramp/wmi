@@ -73,7 +73,20 @@ func QueryNamespace(query string, dst interface{}, namespace string) error {
 // Query is a wrapper around DefaultClient.Query.
 func Query(query string, dst interface{}, connectServerArgs ...interface{}) error {
 	if DefaultClient.SWbemServicesClient == nil {
-		return DefaultClient.Query(query, dst, connectServerArgs...)
+		//return DefaultClient.Query(query, dst, connectServerArgs...)
+		c := make(chan error, 1)
+		go func() { 
+			c <- DefaultClient.Query(query, dst, connectServerArgs...) 
+		} ()
+		
+		select {
+			case err := <-c:
+			return err
+			case <-time.After(120*time.Second):
+			lock.Unlock()
+			runtime.UnlockOSThread()
+			return ErrWMITimeout
+		}
 	}
 	return DefaultClient.SWbemServicesClient.Query(query, dst, connectServerArgs...)
 }
@@ -200,13 +213,15 @@ func (c *Client) Query(query string, dst interface{}, connectServerArgs ...inter
 	// Initialize a slice with Count capacity
 	dv.Set(reflect.MakeSlice(dv.Type(), 0, int(count)))
 
+	itemIndexFlag := true
 	var errFieldMismatch error
-	for itemRaw, length, err := enum.Next(1); length > 0; itemRaw, length, err = enum.Next(1) {
-		if err != nil {
-			return err
-		}
-
+	for itemRaw, length, errItem := enum.Next(1); length > 0; itemRaw, length, errItem = enum.Next(1) {
 		err := func() error {
+			if errItem != nil {
+				itemIndexFlag = false
+				return nil
+				//return errItem
+			}
 			// item is a SWbemObject, but really a Win32_Process
 			item := itemRaw.ToIDispatch()
 			defer item.Release()
@@ -231,6 +246,39 @@ func (c *Client) Query(query string, dst interface{}, connectServerArgs ...inter
 		if err != nil {
 			return err
 		}
+		if itemIndexFlag == false{
+			break
+		}
+	}
+	//to work on windows xp and windows 2003 ( these systems does not have ItemIndex) 
+	if itemIndexFlag == false {
+		enum, _ := oleutil.MustGetProperty(result, "_NewEnum").ToIUnknown().IEnumVARIANT(ole.IID_IEnumVariant)
+	    for {
+	        itemRaw, _, err1 := enum.Next(1)
+			
+			if err1 != nil {
+           		break
+        	}
+				        					
+			item := itemRaw.ToIDispatch()
+			defer itemRaw.Clear()
+	
+			ev := reflect.New(elemType)
+			if err = c.loadEntity(ev.Interface(), item); err != nil {
+				if _, ok := err.(*ErrFieldMismatch); ok {
+					// We continue loading entities even in the face of field mismatch errors.
+					// If we encounter any other error, that other error is returned. Otherwise,
+					// an ErrFieldMismatch is returned.
+					errFieldMismatch = err
+				} else {
+					return err
+				}
+			}
+			if mat != multiArgTypeStructPtr {
+				ev = ev.Elem()
+			}
+			dv.Set(reflect.Append(dv, ev))	
+	    }
 	}
 	return errFieldMismatch
 }
@@ -251,6 +299,8 @@ func (e *ErrFieldMismatch) Error() string {
 }
 
 var timeType = reflect.TypeOf(time.Time{})
+var strArray = reflect.TypeOf([]string{})
+var intArray = reflect.TypeOf([]int{})
 
 // loadEntity loads a SWbemObject into a struct pointer.
 func (c *Client) loadEntity(dst interface{}, src *ole.IDispatch) (errFieldMismatch error) {
@@ -373,6 +423,27 @@ func (c *Client) loadEntity(dst interface{}, src *ole.IDispatch) (errFieldMismat
 					Reason:     "not a Float32",
 				}
 			}
+		case []interface{}:
+			switch f.Type() {
+				case strArray:
+					strArr := make([]string, len(val))
+					for i, v := range val {
+						strArr[i],_  = v.(string)
+					}						
+					f.Set(reflect.ValueOf(strArr))
+				case intArray:
+					intArr := make([]int, len(val))
+					for i, v := range val {
+						intArr[i] = int(v.(int32))
+					}		
+					f.Set(reflect.ValueOf(intArr))
+				default:
+					return &ErrFieldMismatch{
+						StructType: of.Type(),
+						FieldName:  n,
+						Reason:     fmt.Sprintf("unsupported interface type (%T)", val),
+				}
+			}	
 		default:
 			if f.Kind() == reflect.Slice {
 				switch f.Type().Elem().Kind() {
