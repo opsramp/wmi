@@ -48,6 +48,7 @@ var (
 	// ErrNilCreateObject is the error returned if CreateObject returns nil even
 	// if the error was nil.
 	ErrNilCreateObject = errors.New("wmi: create object returned nil")
+	ErrWMITimeout = errors.New("wmi: query timeout")
 	lock               sync.Mutex
 )
 
