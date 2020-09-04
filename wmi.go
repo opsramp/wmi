@@ -82,11 +82,12 @@ func Query(query string, dst interface{}, connectServerArgs ...interface{}) erro
 		
 		select {
 			case err := <-c:
-			return err
+				return err
 			case <-time.After(120*time.Second):
-			lock.Unlock()
-			runtime.UnlockOSThread()
-			return ErrWMITimeout
+				//Commenting due to WMI crash issues
+				//lock.Unlock()
+				//runtime.UnlockOSThread()
+				return ErrWMITimeout
 		}
 	}
 	return DefaultClient.SWbemServicesClient.Query(query, dst, connectServerArgs...)
@@ -152,7 +153,7 @@ func (c *Client) Query(query string, dst interface{}, connectServerArgs ...inter
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	err := ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
+	err := ole.CoInitialize(0)
 	if err != nil {
 		oleCode := err.(*ole.OleError).Code()
 		if oleCode != ole.S_OK && oleCode != S_FALSE {
@@ -337,6 +338,10 @@ func (c *Client) loadEntity(dst interface{}, src *ole.IDispatch) (errFieldMismat
 			continue
 		}
 		defer prop.Clear()
+		
+		if prop.Value() == nil {
+			continue
+		}
 
 		switch val := prop.Value().(type) {
 		case int8, int16, int32, int64, int:
