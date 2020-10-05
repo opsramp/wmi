@@ -339,9 +339,10 @@ func (c *Client) loadEntity(dst interface{}, src *ole.IDispatch) (errFieldMismat
 		}
 		defer prop.Clear()
 		
-		if prop.Value() == nil {
+		//commenting this code it is failing for array type(beacuse array type is handled in switch default) 
+		/*if prop.Value() == nil {
 			continue
-		}
+		}*/
 
 		switch val := prop.Value().(type) {
 		case int8, int16, int32, int64, int:
